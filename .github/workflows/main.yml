@@ -1,0 +1,58 @@
+name: Weekly Traffic Data Collection
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # 每周一UTC时间3:00运行（北京时间11:00）
+  workflow_dispatch:       # 允许手动触发
+
+jobs:
+  traffic:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: 'traffic-data'  # 使用专门的分支
+
+    - name: Get traffic data
+      uses: dawidd6/action-repository-traffic@v2
+      id: traffic
+      with:
+        format: 'json'
+
+    - name: Process and save monthly data
+      run: |
+        # 创建数据目录
+        mkdir -p traffic-data
+        
+        # 获取当前年月（格式：YYYY-MM）
+        MONTH=$(date -u +"%Y-%m")
+        FILE="traffic-data/$MONTH.json"
+        
+        # 获取当前数据（格式化JSON）
+        DATA='${{ steps.traffic.outputs.data }}'
+        JSON_DATA=$(echo "$DATA" | jq -c .)
+        
+        # 如果文件不存在则创建初始结构
+        if [ ! -f "$FILE" ]; then
+          echo '{"weeks":{}}' > "$FILE"
+        fi
+        
+        # 获取本周的周一日期（YYYY-MM-DD格式）
+        WEEK_START=$(date -u -d "last monday" +"%Y-%m-%d")
+        
+        # 使用jq合并数据（保留历史周数据）
+        jq --arg week "$WEEK_START" \
+           --argjson newData "$JSON_DATA" \
+           '.weeks[$week] = $newData' \
+           "$FILE" > tmp.json && mv tmp.json "$FILE"
+
+    - name: Commit and push changes
+      run: |
+        git config user.name "github-actions"
+        git config user.email "actions@users.noreply.github.com"
+        git add traffic-data/
+        git commit -m "Weekly traffic update for $(date -u +'%Y-%m-%d')"
+        git push
