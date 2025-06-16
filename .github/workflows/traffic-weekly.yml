@@ -1,0 +1,152 @@
+name: Weekly Traffic Report
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # 每周一 UTC 00:00 (北京时间周一 08:00)
+  workflow_dispatch:
+
+jobs:
+  collect-traffic:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+    
+    steps:
+    # 步骤 1: 检出代码
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    # 步骤 2: 设置 Python 环境
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+    
+    # 步骤 3: 安装依赖
+    - name: Install dependencies
+      run: pip install requests
+    
+    # 步骤 4: 直接在脚本中处理所有逻辑
+    - name: Run traffic collector
+      run: |
+        # 创建内联 Python 脚本
+        cat << 'EOF' > traffic_collector.py
+        import os
+        import sys
+        import requests
+        import csv
+        from datetime import datetime
+        
+        # 配置信息
+        TOKEN = os.environ['GH_TOKEN']
+        OWNER = os.environ['REPO_OWNER']
+        REPO = os.environ['REPO_NAME']
+        CSV_FILE = 'traffic_data.csv'
+        
+        print(f"开始收集仓库流量数据: {OWNER}/{REPO}")
+        
+        # 确保 CSV 文件存在
+        if not os.path.exists(CSV_FILE):
+            print(f"创建新的 CSV 文件: {CSV_FILE}")
+            with open(CSV_FILE, 'w') as f:
+                pass
+        
+        # 获取流量数据
+        headers = {
+            "Authorization": f"Bearer {TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        views_url = f"https://api.github.com/repos/{OWNER}/{REPO}/traffic/views"
+        clones_url = f"https://api.github.com/repos/{OWNER}/{REPO}/traffic/clones"
+        
+        try:
+            # 发送请求
+            views_res = requests.get(views_url, headers=headers)
+            clones_res = requests.get(clones_url, headers=headers)
+            
+            # 检查响应状态
+            views_res.raise_for_status()
+            clones_res.raise_for_status()
+            
+            views_data = views_res.json().get('views', [])
+            clones_data = clones_res.json().get('clones', [])
+            
+            print(f"获取到 {len(views_data)} 天访问数据, {len(clones_data)} 天克隆数据")
+            
+            # 合并数据
+            combined = {}
+            for view in views_data:
+                date = view['timestamp'][:10]
+                combined.setdefault(date, {}).update({
+                    'views': view['count'],
+                    'unique_visitors': view['uniques']
+                })
+            
+            for clone in clones_data:
+                date = clone['timestamp'][:10]
+                combined.setdefault(date, {}).update({
+                    'clones': clone['count'],
+                    'unique_cloners': clone['uniques']
+                })
+            
+            # 保存到 CSV
+            existing_dates = set()
+            if os.path.exists(CSV_FILE) and os.path.getsize(CSV_FILE) > 0:
+                with open(CSV_FILE, 'r') as f:
+                    reader = csv.DictReader(f)
+                    if reader.fieldnames:
+                        existing_dates = {row['date'] for row in reader}
+            
+            with open(CSV_FILE, 'a', newline='') as f:
+                fieldnames = ['date', 'views', 'unique_visitors', 'clones', 'unique_cloners']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                
+                if not existing_dates:
+                    writer.writeheader()
+                
+                sorted_dates = sorted(combined.keys())
+                new_entries = 0
+                
+                for date in sorted_dates:
+                    if date not in existing_dates:
+                        row = {'date': date}
+                        row.update(combined[date])
+                        writer.writerow(row)
+                        new_entries += 1
+                
+                print(f"添加了 {new_entries} 条新记录")
+            
+            print("流量数据收集完成!")
+            sys.exit(0)
+            
+        except Exception as e:
+            print(f"发生错误: {str(e)}")
+            print(f"访问量 API 响应: {views_res.status_code if 'views_res' in locals() else 'N/A'} {views_res.text if 'views_res' in locals() else ''}")
+            print(f"克隆量 API 响应: {clones_res.status_code if 'clones_res' in locals() else 'N/A'} {clones_res.text if 'clones_res' in locals() else ''}")
+            sys.exit(1)
+        EOF
+        
+        # 运行内联脚本
+        python traffic_collector.py
+    
+    # 步骤 5: 提交并推送更改
+    - name: Commit and push changes
+      run: |
+        git config user.name "github-actions"
+        git config user.email "actions@users.noreply.github.com"
+        
+        # 添加流量数据文件
+        git add traffic_data.csv
+        
+        # 检查是否有实际更改
+        if git diff-index --quiet HEAD --; then
+          echo "没有需要提交的更改"
+        else
+          git commit -m "自动更新流量数据"
+          git push "https://${{ github.actor }}:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
+        fi
