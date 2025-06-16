@@ -1,108 +1,40 @@
-name: ECCFP Repository Traffic Monitor
+name: Weekly Traffic Report
 
 on:
   schedule:
-    - cron: '0 3 * * 1'  # 每周一 UTC 时间 3:00 运行（北京时间 11:00）
+    # 每周一 UTC 时间 00:00 运行 (北京时间周一 08:00)
+    - cron: "0 0 * * 1"
   workflow_dispatch:
 
 jobs:
-  traffic:
+  collect-traffic:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+    
     steps:
-    - name: Checkout ECCFP repository
+    - name: Checkout code
       uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        repository: WSG-Lab/ECCFP
-        ref: traffic-data
-        token: ${{ secrets.ECCFP_PAT }}
-
+        python-version: "3.x"
+    
     - name: Install dependencies
+      run: pip install requests
+    
+    - name: Run traffic collector
       run: |
-        sudo apt-get update
-        sudo apt-get install -y jq curl
-        
-    # 方法1：使用固定版本号（推荐）
-    - name: Get traffic data (fixed version)
-      uses: dawidd6/action-repository-traffic@e3b7a7e4b0a0c3b3b3b3b3b3b3b3b3b3b3b3b3b  # v2 的固定commit
-      id: traffic
-      with:
-        repo: WSG-Lab/ECCFP
-        token: ${{ secrets.GITHUB_TOKEN }}
-        
-    # 方法2：替代方案 - 直接调用GitHub API
-    - name: Get traffic data (API fallback)
-      if: steps.traffic.outputs.data == ''
-      id: api_traffic
-      run: |
-        # 获取traffic数据
-        views=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/WSG-Lab/ECCFP/traffic/views")
-        clones=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/WSG-Lab/ECCFP/traffic/clones")
-        referrers=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/WSG-Lab/ECCFP/traffic/popular/referrers")
-        paths=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/WSG-Lab/ECCFP/traffic/popular/paths")
-        
-        # 组合JSON数据
-        data_json=$(jq -n \
-          --argjson views "$views" \
-          --argjson clones "$clones" \
-          --argjson referrers "$referrers" \
-          --argjson paths "$paths" \
-          '{views: $views.views, clones: $clones.clones, referrers: $referrers, paths: $paths}')
-        
-        # 设置输出
-        echo "data=$data_json" >> $GITHUB_OUTPUT
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Process traffic data
-      run: |
-        # 确定使用哪个数据源
-        if [ -n "${{ steps.traffic.outputs.data }}" ]; then
-          DATA='${{ steps.traffic.outputs.data }}'
-        else
-          DATA='${{ steps.api_traffic.outputs.data }}'
-        fi
-        
-        # 处理数据
-        mkdir -p traffic-data
-        MONTH=$(date -u +"%Y-%m")
-        FILE="traffic-data/$MONTH.json"
-        JSON_DATA=$(echo "$DATA" | jq -c .)
-        
-        if [ ! -f "$FILE" ]; then
-          echo '{"repository": "WSG-Lab/ECCFP", "weeks":{}}' > "$FILE"
-        fi
-        
-        WEEK_START=$(date -u -d "last monday" +"%Y-%m-%d")
-        
-        jq --arg week "$WEEK_START" \
-           --argjson newData "$JSON_DATA" \
-           '.weeks[$week] = $newData' \
-           "$FILE" > tmp.json && mv tmp.json "$FILE"
-
-    - name: Commit and push
+        cd .github/traffic
+        python traffic_collector.py
+      
+    - name: Commit and push changes
       run: |
         git config user.name "github-actions"
         git config user.email "actions@users.noreply.github.com"
-        git add traffic-data/
-        git commit -m "Weekly traffic update for ECCFP ($(date -u +'%Y-%m-%d'))"
+        git add .github/traffic/traffic_data.csv
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update traffic data"
         git push
-
-    # 可选：添加通知
-    - name: Notify on failure
-      if: failure()
-      uses: actions/github-script@v6
-      with:
-        script: |
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: "🚨 Traffic monitoring failed for ECCFP repository!"
-          })
