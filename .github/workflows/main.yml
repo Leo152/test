@@ -2,7 +2,7 @@ name: Weekly Traffic Report
 
 on:
   schedule:
-    - cron: "0 0 * * 1"
+    - cron: "0 0 * * 1"  # 每周一 UTC 00:00 (北京时间周一 08:00)
   workflow_dispatch:
 
 jobs:
@@ -14,48 +14,56 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
     
     steps:
-    - name: Checkout code
+    # 步骤 1: 检出代码（包含所有分支和历史）
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # 获取完整历史记录
     
-    - name: Check directory structure
+    # 步骤 2: 确保目录结构存在
+    - name: Create directory structure
       run: |
-        echo "Current directory: $(pwd)"
-        echo "Creating .github/traffic directory if missing"
+        echo "创建必要的目录结构..."
         mkdir -p .github/traffic
-        echo "Creating traffic_data.csv if missing"
         touch .github/traffic/traffic_data.csv
-        echo "Directory structure:"
+        
+        echo "当前目录结构:"
         ls -R .github
     
+    # 步骤 3: 设置 Python 环境
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.x"
     
+    # 步骤 4: 安装依赖
     - name: Install dependencies
       run: pip install requests
     
-    - name: Run traffic collector
+    # 步骤 5: 添加调试信息
+    - name: Debug before running script
       run: |
-        echo "Running traffic collector..."
-        cd .github/traffic
-        python traffic_collector.py
+        echo "工作目录: $(pwd)"
+        echo ".github 目录内容:"
+        ls -la .github
+        echo ".github/traffic 目录内容:"
+        ls -la .github/traffic
     
+    # 步骤 6: 运行流量收集脚本（使用完整路径）
+    - name: Run traffic collector
+      run: python .github/traffic/traffic_collector.py
+    
+    # 步骤 7: 提交并推送更改
     - name: Commit and push changes
       run: |
-        # 配置 Git
         git config user.name "github-actions"
         git config user.email "actions@users.noreply.github.com"
-        
-        # 添加更改
         git add .github/traffic/traffic_data.csv
         
-        # 检查是否有实际更改
+        # 仅当有实际更改时才提交
         if git diff-index --quiet HEAD --; then
-          echo "No changes to commit"
+          echo "没有需要提交的更改"
         else
-          git commit -m "Update traffic data"
+          git commit -m "自动更新流量数据"
           git push "https://${{ github.actor }}:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
         fi
